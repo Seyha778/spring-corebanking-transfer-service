@@ -33,4 +33,8 @@ public class TransferRequest {
     @NotBlank
     private BigDecimal txnAmount;
 
+    @JsonProperty("service_type")
+    @NotBlank
+    private BigDecimal serviceType;
+
 }
