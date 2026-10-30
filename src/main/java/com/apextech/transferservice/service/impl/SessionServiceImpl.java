@@ -4,6 +4,7 @@ import com.apextech.transferservice.dto.response.SessionData;
 import com.apextech.transferservice.dto.response.SessionResponse;
 import com.apextech.transferservice.service.SessionService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
@@ -14,9 +15,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import tools.jackson.core.type.TypeReference;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class SessionServiceImpl implements SessionService {
 
     private static final String SESSION_PREFIX = "core-banking:session:";
@@ -51,7 +54,13 @@ public class SessionServiceImpl implements SessionService {
             return false;
         }
 
-        return Boolean.TRUE.equals(redisTemplateMap.hasKey(SESSION_PREFIX + sessionId));
+        String sessionKey = SESSION_PREFIX + sessionId;
+
+        Boolean sessionExists = redisTemplateMap.hasKey(sessionKey);
+
+        log.info("Redis session check: sessionId={}, found={}", sessionId, sessionExists);
+
+        return Boolean.TRUE.equals(sessionExists);
     }
 
     @Override
@@ -69,18 +78,35 @@ public class SessionServiceImpl implements SessionService {
 
     @Override
     public SessionData getSession(String sessionId) {
-        if (sessionId == null || sessionId.isBlank()) {
+
+        String sessionKey = SESSION_PREFIX + sessionId;
+
+        if(Boolean.FALSE.equals(redisTemplateMap.hasKey(SESSION_PREFIX + sessionId))){
+            log.warn("Session validate failed: {}", sessionId);
             return null;
         }
 
-        Object value = redisTemplateMap.opsForValue().get(SESSION_PREFIX + sessionId);
+        Object redisData = redisTemplateMap.opsForValue().get(sessionKey);
 
-        if (value == null) {
+        if (redisData == null) {
+            log.warn("Session not found: {}", sessionId);
             return null;
         }
 
-        // Convert the Redis JSON/map representation to SessionData
-        return objectMapper.convertValue(value, SessionData.class);
+        Map<String, Object> attributes =
+                objectMapper.convertValue(
+                        redisData,
+                        new TypeReference<Map<String, Object>>() {}
+                );
+
+        SessionData sessionData = SessionData.builder()
+                .attributes(attributes)
+                .build();
+
+        log.info("Session retrieved: {}, attributes count: {}",
+                sessionId, attributes.size());
+
+        return sessionData;
     }
 
 }

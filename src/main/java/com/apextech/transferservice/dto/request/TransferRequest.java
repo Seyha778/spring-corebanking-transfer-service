@@ -35,6 +35,6 @@ public class TransferRequest {
 
     @JsonProperty("service_type")
     @NotBlank
-    private BigDecimal serviceType;
+    private String serviceType;
 
 }

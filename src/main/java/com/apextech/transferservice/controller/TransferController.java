@@ -1,10 +1,12 @@
 package com.apextech.transferservice.controller;
 
+import com.apextech.transferservice.dto.request.SessionRequest;
 import com.apextech.transferservice.dto.request.TransferRequest;
 import com.apextech.transferservice.dto.response.ResponseMessage;
 import com.apextech.transferservice.dto.response.ResponseMessageBuilder;
 import com.apextech.transferservice.dto.response.SessionResponse;
 import com.apextech.transferservice.dto.response.TransferResponse;
+import com.apextech.transferservice.entity.TransferEntity;
 import com.apextech.transferservice.service.TransferService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -29,9 +31,9 @@ public class TransferController {
     }
 
     @PostMapping("/transferCommit")
-    public ResponseMessage<TransferResponse> transferCommit(@RequestBody String sessionId) {
-        TransferResponse response = transferService.transferCommit(sessionId);
-        return new ResponseMessageBuilder<TransferResponse>()
+    public ResponseMessage<TransferEntity> transferCommit(@RequestBody SessionRequest request) {
+        TransferEntity response = transferService.transferCommit(request);
+        return new ResponseMessageBuilder<TransferEntity>()
                 .success()
                 .data(response)
                 .build();

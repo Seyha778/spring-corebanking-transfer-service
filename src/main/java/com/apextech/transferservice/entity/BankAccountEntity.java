@@ -16,6 +16,7 @@ import lombok.Setter;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 
 @Entity
@@ -52,6 +53,12 @@ public class BankAccountEntity {
 
     @Column(name = "currency", nullable = false)
     private String currency;
+
+    @Column(name = "balance", nullable = false)
+    private BigDecimal balance;
+
+    @Column(name = "block_amount", nullable = false)
+    private BigDecimal blockAmount;
 
     @Column(name = "status", nullable = false)
     @Builder.Default

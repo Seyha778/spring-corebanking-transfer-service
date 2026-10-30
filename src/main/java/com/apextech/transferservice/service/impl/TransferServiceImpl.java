@@ -1,10 +1,13 @@
 package com.apextech.transferservice.service.impl;
 
+import com.apextech.transferservice.constant.TransactionTypeEnum;
 import com.apextech.transferservice.constant.TransferStatusEnum;
+import com.apextech.transferservice.dto.request.SessionRequest;
 import com.apextech.transferservice.dto.request.TransferRequest;
 import com.apextech.transferservice.dto.response.SessionData;
 import com.apextech.transferservice.dto.response.SessionResponse;
-import com.apextech.transferservice.dto.response.TransferResponse;
+import com.apextech.transferservice.dto.response.TransferSessionResponse;
+import com.apextech.transferservice.entity.BankAccountEntity;
 import com.apextech.transferservice.entity.TransferEntity;
 import com.apextech.transferservice.repository.BankAccountRepository;
 import com.apextech.transferservice.repository.TransferRepository;
@@ -14,10 +17,15 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
+import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
@@ -33,40 +41,48 @@ public class TransferServiceImpl implements TransferService {
     @PersistenceContext
     private EntityManager entityManager;
 
+    private final ObjectMapper objectMapper;
+
     @Override
     public SessionResponse transferValidate(TransferRequest request) {
 
         String fromAccount = request.getFromAccount();
         String toAccount = request.getToAccount();
 
-        //validate from account
-        boolean isValidFromAccount = bankAccountRepository.existsByAccountNumber(fromAccount);
+        //validate sender account
+        BankAccountEntity senderInfo = bankAccountRepository
+                .findTopByAccountNumber(fromAccount)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST,
+                        TransactionTypeEnum.DEBIT.getDescription() + " account not found."
+                ));
 
-        if(!isValidFromAccount){
-            throw new IllegalArgumentException(
-                    "From account not found."
-            );
-        }
-
-        //validate to account
-        boolean isValidToAccount = bankAccountRepository.existsByAccountNumber(toAccount);
-        if(!isValidToAccount){
-            throw new IllegalArgumentException(
-                    "To account not found."
-            );
-        }
-
-        String fromCurrency = normalizeCurrency(request.getFromCurrency());
-        String toCurrency = normalizeCurrency(request.getToCurrency());
-
-        BigDecimal txnAmount = request.getTxnAmount();
+        //validate receiver account
+        BankAccountEntity receiverInfo = bankAccountRepository
+                .findTopByAccountNumber(fromAccount)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST,
+                        TransactionTypeEnum.CREDIT.getDescription() + " account not found."
+                ));
 
         // 2. Validate amount
+        BigDecimal txnAmount = request.getTxnAmount();
         if (txnAmount.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new IllegalArgumentException(
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
                     "Transaction amount must be greater than zero"
             );
         }
+
+        // validate account balance and get available account balance
+        BigDecimal availableBalance = validateTxnBalanceAndGetFinalBalance(senderInfo.getBalance(), senderInfo.getBlockAmount());
+
+        // validate txn balance and get final balance
+        validateTxnBalanceAndGetFinalBalance(availableBalance, txnAmount);
+
+        // 2.2 Currency checking
+        String fromCurrency = normalizeCurrency(request.getFromCurrency());
+        String toCurrency = normalizeCurrency(request.getToCurrency());
 
         // 3. Check cross-currency transfer
         boolean isCrossTransfer = isCrossCurrency(fromCurrency, toCurrency);
@@ -90,54 +106,56 @@ public class TransferServiceImpl implements TransferService {
         SessionData sessionData = SessionData.builder()
                 .build();
 
-        sessionData.put("fromAccount", fromAccount);
-        sessionData.put("toAccount", toAccount);
-        sessionData.put("fromCurrency",fromCurrency);
-        sessionData.put("toCurrency", toCurrency);
-        sessionData.put("txnAmount", txnAmount);
-        sessionData.put("receiverAmount", receiverAmount);
-        sessionData.put("fee", 0);
-        sessionData.put("rate", rate);
+        TransferSessionResponse transferSession = TransferSessionResponse.builder()
+                .fromAccount(fromAccount)
+                .toAccount(toAccount)
+                .txnAmount(txnAmount)
+                .totalAmount(receiverAmount)
+                .fee(BigDecimal.ZERO)
+                .rate(rate)
+                .fromCurrency(fromCurrency)
+                .toCurrency(toCurrency)
+                .serviceType(request.getServiceType())
+                .build();
+
+        sessionData.put("data", transferSession);
 
         return sessionService.create(sessionData);
     }
 
     @Override
-    public TransferResponse transferCommit(String sessionId) {
-        //Verify session id
-        boolean isValidSessionId = sessionService.verify(sessionId);
+    @Transactional
+    public TransferEntity transferCommit(SessionRequest request) {
+        String sessionId = request.getSessionId();
 
         //Get session data
-        if(isValidSessionId){
-            SessionData sessionData = sessionService.getSession(sessionId);
-            if (sessionData != null) {
-                TransferEntity transfer = TransferEntity.builder()
-                        .fromAccount((String) sessionData.get("fromAccount"))
-                        .toAccount((String) sessionData.get("toAccount"))
-                        .txnAmount((BigDecimal) sessionData.get("txnAmount"))
-                        .totalAmount((BigDecimal) sessionData.get("receiverAmount"))
-                        .fee((BigDecimal) sessionData.get("fee"))
-                        .rate((BigDecimal) sessionData.get("rate"))
-                        .fromCurrency((String) sessionData.get("fromCurrency"))
-                        .toCurrency((String) sessionData.get("toCurrency"))
-                        .status(TransferStatusEnum.SUCCESS.toString())
-                        .createdBy((String) sessionData.get("fromAccount"))
-                        .modifiedBy((String) sessionData.get("fromAccount"))
-                        .build();
+        SessionData sessionData = sessionService.getSession(sessionId);
+        if (sessionData != null) {
+            TransferSessionResponse transferSession = objectMapper.convertValue(
+                    sessionData.get("data"),
+                    TransferSessionResponse.class
+            );
 
-                TransferEntity savedTransfer = transferRepository.save(transfer);
-                entityManager.refresh(savedTransfer);
+            TransferEntity transfer = TransferEntity.builder()
+                    .fromAccount(transferSession.getFromAccount())
+                    .toAccount(transferSession.getToAccount())
+                    .txnAmount(transferSession.getTxnAmount())
+                    .totalAmount(transferSession.getTotalAmount())
+                    .fee(transferSession.getFee())
+                    .rate(transferSession.getRate())
+                    .fromCurrency(transferSession.getFromCurrency())
+                    .toCurrency(transferSession.getToCurrency())
+                    .status(TransferStatusEnum.SUCCESS.toString())
+                    .service(transferSession.getServiceType())
+                    .createdBy(transferSession.getFromAccount())
+                    .modifiedBy(transferSession.getFromAccount())
+                    .build();
 
-                String transactionId = savedTransfer.getTransactionId();
+            TransferEntity res = recordTransfer(transfer);
 
-                return TransferResponse.builder()
-                        .transactionId(transactionId)
-                        .fromAccount((String) sessionData.get("fromAccount"))
-                        .toAccount((String) sessionData.get("toAccount"))
-                        .amount((String) sessionData.get("receiverAmount"))
-                        .currency((String) sessionData.get("toCurrency"))
-                        .build();
-            }
+            minusBalance(transferSession.getFromAccount(), res.getTxnAmount());
+            plusBalance(transferSession.getToAccount(), res.getTotalAmount());
+            return recordTransfer(transfer);
         }
         return null;
     }
@@ -180,6 +198,36 @@ public class TransferServiceImpl implements TransferService {
         }
 
         throw new IllegalArgumentException("Unsupported currency conversion");
+    }
+
+    public TransferEntity recordTransfer(TransferEntity transfer) {
+        TransferEntity savedTransfer = transferRepository.saveAndFlush(transfer);
+        entityManager.refresh(savedTransfer);
+        return savedTransfer;
+    }
+
+    private void minusBalance(String accountNumber, BigDecimal balance) {
+        bankAccountRepository.minusBalance(accountNumber, balance);
+    }
+
+    private void plusBalance(String accountNumber, BigDecimal balance) {
+        bankAccountRepository.plusBalance(accountNumber, balance);
+    }
+
+    private BigDecimal validateTxnBalanceAndGetFinalBalance(BigDecimal balance, BigDecimal txnAmount) {
+        BigDecimal finalBalance = Optional.ofNullable(balance)
+                .orElse(BigDecimal.ZERO)
+                .subtract(
+                        Optional.ofNullable(txnAmount)
+                                .orElse(BigDecimal.ZERO)
+                );
+        if (finalBalance.compareTo(BigDecimal.ZERO) < 0) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Insufficient account balance."
+            );
+        }
+        return finalBalance;
     }
 
 }
